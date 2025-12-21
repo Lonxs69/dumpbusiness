@@ -33,6 +33,10 @@ jobs:
       run: |
         if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
           DUMP_FILE="${{ github.event.inputs.dump_file }}"
+          # Si no tiene extensión .dump, agregarla
+          if [[ "$DUMP_FILE" != *.dump ]]; then
+            DUMP_FILE="$DUMP_FILE.dump"
+          fi
         else
           DUMP_FILE=$(ls *.dump | head -1)
         fi
@@ -41,6 +45,8 @@ jobs:
         # Verificar que el archivo existe
         if [ ! -f "$DUMP_FILE" ]; then
           echo "Error: Dump file $DUMP_FILE not found!"
+          echo "Available files:"
+          ls -la *.dump || echo "No .dump files found"
           exit 1
         fi
         echo "Dump file size: $(du -h $DUMP_FILE)"
