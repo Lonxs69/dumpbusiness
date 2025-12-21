@@ -20,10 +20,14 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v3
     
-    - name: Setup PostgreSQL Client
+    - name: Setup PostgreSQL Client with Docker
       run: |
         sudo apt-get update
-        sudo apt-get install -y postgresql-client-15
+        sudo apt-get install -y docker.io
+        sudo systemctl start docker
+        sudo systemctl enable docker
+        # Verificar que Docker funcione
+        sudo docker --version
     
     - name: Find dump file
       id: find_dump
@@ -35,32 +39,47 @@ jobs:
         fi
         echo "dump_file=$DUMP_FILE" >> $GITHUB_OUTPUT
         echo "Found dump file: $DUMP_FILE"
+        # Verificar que el archivo existe
+        if [ ! -f "$DUMP_FILE" ]; then
+          echo "Error: Dump file $DUMP_FILE not found!"
+          exit 1
+        fi
+        echo "Dump file size: $(du -h $DUMP_FILE)"
     
     - name: Backup current database (optional)
       run: |
         echo "Creating backup before restore..."
-        pg_dump -h ${{ secrets.RDS_HOST }} -p 5432 -U ${{ secrets.DB_USER }} -d ${{ secrets.DB_NAME }} > backup_$(date +%Y%m%d_%H%M%S).sql
-      env:
-        PGPASSWORD: ${{ secrets.DB_PASSWORD }}
+        sudo docker run --rm -e PGPASSWORD=${{ secrets.DB_PASSWORD }} postgres:17 pg_dump -h ${{ secrets.RDS_HOST }} -p 5432 -U ${{ secrets.DB_USER }} -d ${{ secrets.DB_NAME }} > backup_$(date +%Y%m%d_%H%M%S).sql
+        echo "Backup created: backup_$(date +%Y%m%d_%H%M%S).sql"
     
     - name: Clear database
       run: |
-        psql -h ${{ secrets.RDS_HOST }} -p 5432 -U ${{ secrets.DB_USER }} -d ${{ secrets.DB_NAME }} -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"
-      env:
-        PGPASSWORD: ${{ secrets.DB_PASSWORD }}
+        echo "Clearing database schema..."
+        sudo docker run --rm -e PGPASSWORD=${{ secrets.DB_PASSWORD }} postgres:17 psql -h ${{ secrets.RDS_HOST }} -p 5432 -U ${{ secrets.DB_USER }} -d ${{ secrets.DB_NAME }} -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"
+        echo "Database schema cleared successfully"
     
     - name: Restore new dump
       run: |
-        pg_restore -h ${{ secrets.RDS_HOST }} -p 5432 -U ${{ secrets.DB_USER }} -d ${{ secrets.DB_NAME }} -v ${{ steps.find_dump.outputs.dump_file }}
-      env:
-        PGPASSWORD: ${{ secrets.DB_PASSWORD }}
+        echo "Restoring dump file: ${{ steps.find_dump.outputs.dump_file }}"
+        sudo docker run --rm -v $(pwd):/backup -e PGPASSWORD=${{ secrets.DB_PASSWORD }} postgres:17 pg_restore -h ${{ secrets.RDS_HOST }} -p 5432 -U ${{ secrets.DB_USER }} -d ${{ secrets.DB_NAME }} -v /backup/${{ steps.find_dump.outputs.dump_file }}
+        echo "Dump restoration completed"
     
     - name: Verify restoration
       run: |
-        psql -h ${{ secrets.RDS_HOST }} -p 5432 -U ${{ secrets.DB_USER }} -d ${{ secrets.DB_NAME }} -c "SELECT COUNT(*) as total_users FROM users;"
-      env:
-        PGPASSWORD: ${{ secrets.DB_PASSWORD }}
+        echo "Verifying database restoration..."
+        USER_COUNT=$(sudo docker run --rm -e PGPASSWORD=${{ secrets.DB_PASSWORD }} postgres:17 psql -h ${{ secrets.RDS_HOST }} -p 5432 -U ${{ secrets.DB_USER }} -d ${{ secrets.DB_NAME }} -t -c "SELECT COUNT(*) FROM users;")
+        echo "Total users in database: $USER_COUNT"
+        
+        # Verificar que hay usuarios
+        if [ "$USER_COUNT" -gt 0 ]; then
+          echo "✅ Database restoration verified successfully!"
+        else
+          echo "❌ Warning: No users found in database after restoration"
+          exit 1
+        fi
 
     - name: Notify success
       run: |
-        echo "✅ Database dump ${{ steps.find_dump.outputs.dump_file }} deployed successfully to production!"
+        echo "🎉 Database dump ${{ steps.find_dump.outputs.dump_file }} deployed successfully to production!"
+        echo "📊 Database is now updated with the latest data"
+        echo "🔗 Backend will automatically use the new data"
